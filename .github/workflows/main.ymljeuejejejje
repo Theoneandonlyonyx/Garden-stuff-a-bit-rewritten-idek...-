@@ -1,0 +1,77 @@
+name: build-jar
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pick the newest zip and unpack it without parent folder
+        run: |
+          shopt -s nullglob
+          zips=(*.zip)
+          if [ ${#zips[@]} -eq 0 ]; then
+            echo "No zip in the repo root, building the repo root itself"
+            echo "SRC=." >> "$GITHUB_ENV"
+          else
+            newest=""; best=-1
+            for z in "${zips[@]}"; do
+              t=$(git log -1 --format=%ct -- "$z")
+              t=${t:-0}
+              if [ "$t" -gt "$best" ] || { [ "$t" -eq "$best" ] && [[ "$z" > "$newest" ]]; }; then
+                best=$t; newest=$z
+              fi
+            done
+            echo "Using zip: $newest"
+            
+            # Temporären Ordner für das Entpacken erstellen
+            rm -rf _tmp_extract _src
+            mkdir _tmp_extract _src
+            
+            # ZIP entpacken
+            unzip -q -o "$newest" -d _tmp_extract
+            
+            # Den obersten Parent-Ordner finden und nur dessen Inhalt nach _src verschieben
+            PARENT_DIR=$(find _tmp_extract -mindepth 1 -maxdepth 1 -type d | head -n 1)
+            if [ -n "$PARENT_DIR" ]; then
+              echo "Stripping parent folder: $PARENT_DIR"
+              mv "$PARENT_DIR"/* _src/ 2>/dev/null || true
+              mv "$PARENT_DIR"/.[!.]* _src/ 2>/dev/null || true # Versteckte Dateien wie .github mitnehmen
+            else
+              # Falls die ZIP gar keinen Parent-Ordner hatte, direkt kopieren
+              mv _tmp_extract/* _src/ 2>/dev/null || true
+            fi
+            rm -rf _tmp_extract
+            
+            # Prüfen ob build.gradle jetzt direkt in _src liegt
+            if [ -f "_src/build.gradle" ]; then
+              echo "SRC=_src" >> "$GITHUB_ENV"
+            else
+              # Fallback falls die Struktur tiefer verschachtelt war
+              gradle_file=$(find _src -name build.gradle | head -1)
+              test -n "$gradle_file"
+              echo "SRC=$(dirname "$gradle_file")" >> "$GITHUB_ENV"
+            fi
+          fi
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.1.1
+
+      - run: gradle build --no-daemon
+        working-directory: ${{ env.SRC }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Gardenstuff-mikexxx-newport-jar
+          path: ${{ env.SRC }}/build/libs/*.jar
+          if-no-files-found: error
