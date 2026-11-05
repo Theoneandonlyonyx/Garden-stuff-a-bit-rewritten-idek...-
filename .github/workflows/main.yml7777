@@ -1,0 +1,55 @@
+name: build-jar
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pick the newest zip and unpack it safely
+        run: |
+          shopt -s nullglob
+          zips=(*.zip)
+          if [ ${#zips[@]} -eq 0 ]; then
+            echo "No zip found, building the repository root"
+            echo "SRC=." >> "$GITHUB_ENV"
+          else
+            newest=""; best=-1
+            for z in "${zips[@]}"; do
+              t=$(git log -1 --format=%ct -- "$z")
+              t=${t:-0}
+              if [ "$t" -gt "$best" ] || { [ "$t" -eq "$best" ] && [[ "$z" > "$newest" ]]; }; then
+                best=$t; newest=$z
+              fi
+            done
+            echo "Using zip: $newest"
+            
+            # Unzip direkt flach ins aktuelle Verzeichnis werfen
+            unzip -q -o "$newest" -d .
+            echo "SRC=." >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.1.1
+          # Verhindert, dass korrupte Konfigurations-Caches aus alten Builds stören
+          cache-disabled: true 
+
+      # --no-configuration-cache zwingt Gradle, die echten Pfade frisch einzulesen
+      - run: gradle clean build --no-daemon --no-configuration-cache
+        working-directory: ${{ env.SRC }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PlantMegaPack-mikexxx-port-jar
+          path: build/libs/*.jar
+          if-no-files-found: error
